@@ -48,7 +48,7 @@ static int modeset_setup_dev(int fd, drmModeRes *res, drmModeConnector *conn,
 			     struct modeset_dev *dev);
 static int modeset_open(int *out, const char *node);
 static int modeset_prepare(int fd);
-static void modeset_draw(void);
+static void modeset_draw(int fd);
 static void modeset_cleanup(int fd);
 
 /*
@@ -562,18 +562,13 @@ int main(int argc, char **argv)
 	if (ret)
 		goto out_close;
 
-	/* perform actual modesetting on each found connector+CRTC */
+	/* save crtc on each found connector+CRTC to restore while cleaning up */
 	for (iter = modeset_list; iter; iter = iter->next) {
 		iter->saved_crtc = drmModeGetCrtc(fd, iter->crtc);
-		ret = drmModeSetCrtc(fd, iter->crtc, iter->fb, 0, 0,
-				     &iter->conn, 1, &iter->mode);
-		if (ret)
-			fprintf(stderr, "cannot set CRTC for connector %u (%d): %m\n",
-				iter->conn, errno);
 	}
 
 	/* draw some colors for 5seconds */
-	modeset_draw();
+	modeset_draw(fd);
 
 	/* cleanup everything */
 	modeset_cleanup(fd);
@@ -630,9 +625,10 @@ static uint8_t next_color(bool *up, uint8_t cur, unsigned int mod)
  * beyond the scope of this document.
  */
 
-static void modeset_draw(void)
+static void modeset_draw(int fd)
 {
 	uint8_t r, g, b;
+	int ret;
 	bool r_up, g_up, b_up;
 	unsigned int i, j, k, off;
 	struct modeset_dev *iter;
@@ -649,13 +645,21 @@ static void modeset_draw(void)
 		b = next_color(&b_up, b, 5);
 
 		for (iter = modeset_list; iter; iter = iter->next) {
+			drmSetMaster(fd);
+			drmModeSetCrtc(fd, iter->crtc, 0,0,0, NULL, 0, NULL);
+			ret = drmModeSetCrtc(fd, iter->crtc, iter->fb, 0, 0, &iter->conn, 1, &iter->mode);
+			if (ret)
+				fprintf(stderr, "cannot set CRTC for connector %u (%d): %m\n",
+						iter->conn, errno);
+
 			for (j = 0; j < iter->height; ++j) {
 				for (k = 0; k < iter->width; ++k) {
 					off = iter->stride * j + k * 4;
-					*(uint32_t*)&iter->map[off] =
-						     (r << 16) | (g << 8) | b;
+					*(uint32_t*)&iter->map[off] = (r << 24) | (g << 16) | (b << 8) | 0xff;
 				}
+
 			}
+			drmDropMaster(fd);
 		}
 
 		usleep(100000);
